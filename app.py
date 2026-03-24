@@ -6,61 +6,75 @@ from shapely.geometry import Point
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEOJSON_PATH = "village.geojson"         # same folder as this script
-VILLAGE_NAME_FIELD = "NAME"
+GEOJSON_PATH        = "village.geojson"
+VILLAGE_NAME_FIELD  = "NAME"
+SIMPLIFY_TOLERANCE  = 0.001   # ~100m — invisible at zoom 8–10, cuts vertices ~70%
 
-MAP_CENTER = [10.8505, 76.2711]          # adjust to your region
-MAP_ZOOM = 8
+MAP_CENTER          = [10.8505, 76.2711]
+MAP_ZOOM            = 8
+HIGHLIGHT_COLOR     = "#FF5733"
+DEFAULT_FILL_COLOR  = "#3186cc"
 
-HIGHLIGHT_COLOR = "#FF5733"
-DEFAULT_FILL_COLOR = "#3186cc"
-
-# ── Load GeoJSON (cached) ─────────────────────────────────────────────────────
+# ── Load + clean + simplify (runs once, fully cached) ─────────────────────────
 
 @st.cache_data
-def load_geodata(path: str):
+def load_geodata(path: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
+
+    # Fix CRS if needed
     if gdf.crs and gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
+
+    # Drop Pondicherry — 1 village, not Kerala
+    gdf = gdf[gdf["STATE"] == "Kerala"].reset_index(drop=True)
+
+    # Drop null geometries
     gdf = gdf[gdf.geometry.notna()].reset_index(drop=True)
+
+    # Simplify — biggest performance win
+    gdf["geometry"] = gdf.geometry.simplify(
+        tolerance=SIMPLIFY_TOLERANCE,
+        preserve_topology=True
+    )
+
     return gdf
 
-def detect_name_field(gdf: gpd.GeoDataFrame) -> str:
-    if VILLAGE_NAME_FIELD and VILLAGE_NAME_FIELD in gdf.columns:
-        return VILLAGE_NAME_FIELD
-    candidates = [
-        c for c in gdf.columns
-        if c.lower() != "geometry" and gdf[c].dtype == object
-    ]
-    return candidates[0] if candidates else None
 
-# ── Fast point-in-polygon using spatial index ─────────────────────────────────
+# ── Cache the serialized GeoJSON string separately ────────────────────────────
+# Avoids re-running gdf.to_json() (slow for 11MB) on every Streamlit rerun
 
-def find_village(gdf: gpd.GeoDataFrame, lat: float, lon: float, name_field: str):
+@st.cache_data
+def get_geojson_str(gdf: gpd.GeoDataFrame) -> str:
+    return gdf.to_json()
+
+
+# ── Fast point-in-polygon via spatial index ───────────────────────────────────
+
+def find_village(gdf: gpd.GeoDataFrame, lat: float, lon: float) -> str | None:
     pt = Point(lon, lat)
-    # R-tree narrows to bounding-box candidates first, then exact check
-    possible_idx = list(gdf.sindex.intersection(pt.bounds))
-    for i in possible_idx:
-        row = gdf.iloc[i]
-        if row.geometry.contains(pt):
-            return row[name_field] if name_field else "Unknown"
+    candidates = list(gdf.sindex.intersection(pt.bounds))
+    for i in candidates:
+        if gdf.iloc[i].geometry.contains(pt):
+            return gdf.iloc[i][VILLAGE_NAME_FIELD]
     return None
 
-# ── Base map ──────────────────────────────────────────────────────────────────
 
-def build_base_map(geojson_str: str, name_field: str, clicked_village: str):
+# ── Build Folium map ──────────────────────────────────────────────────────────
+
+def build_map(geojson_str: str, clicked_village: str | None) -> folium.Map:
     import json
+
     m = folium.Map(location=MAP_CENTER, zoom_start=MAP_ZOOM, tiles="CartoDB positron")
 
     def style_fn(feature):
         is_selected = (
             clicked_village is not None
-            and feature["properties"].get(name_field) == clicked_village
+            and feature["properties"].get(VILLAGE_NAME_FIELD) == clicked_village
         )
         return {
-            "fillColor": HIGHLIGHT_COLOR if is_selected else DEFAULT_FILL_COLOR,
-            "color": "white",
-            "weight": 0.5,
+            "fillColor":   HIGHLIGHT_COLOR if is_selected else DEFAULT_FILL_COLOR,
+            "color":       "white",
+            "weight":      0.5,
             "fillOpacity": 0.65 if is_selected else 0.3,
         }
 
@@ -69,47 +83,46 @@ def build_base_map(geojson_str: str, name_field: str, clicked_village: str):
         name="Villages",
         style_function=style_fn,
         highlight_function=lambda _: {
-            "fillColor": "#ffff00",
-            "color": "white",
-            "weight": 1.5,
+            "fillColor":   "#ffff00",
+            "color":       "white",
+            "weight":      1.5,
             "fillOpacity": 0.7,
         },
         tooltip=folium.GeoJsonTooltip(
-            fields=[name_field] if name_field else [],
-            aliases=["Village:"] if name_field else [],
+            fields=[VILLAGE_NAME_FIELD],
+            aliases=["Village:"],
             sticky=False,
         ),
     ).add_to(m)
 
-    # ✅ Key fix: ensures last_clicked fires even when GeoJson layer absorbs the click
-    # CSS hides the visible coordinate popup while keeping click detection working
+    # Needed to capture clicks through the GeoJson layer
+    # CSS hides the coordinate popup it would normally show
     folium.LatLngPopup().add_to(m)
-    hide_popup_css = """
+    m.get_root().html.add_child(folium.Element("""
     <style>
-    .leaflet-popup-content-wrapper { display: none !important; }
-    .leaflet-popup-tip-container    { display: none !important; }
+        .leaflet-popup-content-wrapper,
+        .leaflet-popup-tip-container { display: none !important; }
     </style>
-    """
-    m.get_root().html.add_child(folium.Element(hide_popup_css))
+    """))
 
     return m
 
-# ── Main app ──────────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="Village Map", layout="wide")
-st.title("🗺️ Village Map")
-st.caption("Click anywhere on the map to identify the village.")
+# ── App ───────────────────────────────────────────────────────────────────────
 
-# Load data
+st.set_page_config(page_title="Kerala Village Map", layout="wide")
+st.title("🗺️ Kerala Village Map")
+st.caption("Hover to see village name. Click to identify and highlight.")
+
+# Load data (cached — runs only once)
 try:
     gdf = load_geodata(GEOJSON_PATH)
 except Exception as e:
     st.error(f"Could not load `{GEOJSON_PATH}`: {e}")
     st.stop()
 
-name_field = detect_name_field(gdf)
-if not name_field:
-    st.warning("No name field found in GeoJSON properties.")
+# Serialize (cached — runs only once)
+geojson_str = get_geojson_str(gdf)
 
 # Session state
 if "clicked_village" not in st.session_state:
@@ -117,13 +130,10 @@ if "clicked_village" not in st.session_state:
 if "clicked_coords" not in st.session_state:
     st.session_state.clicked_coords = None
 
-# Serialize once — passed to cached map builder
-geojson_str = gdf.to_json()
+# Build map
+m = build_map(geojson_str, st.session_state.clicked_village)
 
-# Build base map (cached per unique clicked_village value)
-m = build_base_map(geojson_str, name_field, st.session_state.clicked_village)
-
-# Add result marker (cheap, outside cache)
+# Add result marker on top (not cached, always fresh)
 if st.session_state.clicked_coords:
     lat, lon = st.session_state.clicked_coords
     label = st.session_state.clicked_village or "No village found"
@@ -134,8 +144,8 @@ if st.session_state.clicked_coords:
         icon=folium.Icon(color="red", icon="info-sign"),
     ).add_to(m)
 
-# Render
-map_data = st_folium(m, width="100%", height=620, returned_objects=["last_clicked"])
+# Render map
+map_data = st_folium(m, width="100%", height=640, returned_objects=["last_clicked"])
 
 # Handle click
 if map_data and map_data.get("last_clicked"):
@@ -144,7 +154,7 @@ if map_data and map_data.get("last_clicked"):
 
     if (lat, lon) != st.session_state.clicked_coords:
         st.session_state.clicked_coords = (lat, lon)
-        st.session_state.clicked_village = find_village(gdf, lat, lon, name_field)
+        st.session_state.clicked_village = find_village(gdf, lat, lon)
         st.rerun()
 
 # Info panel
@@ -153,6 +163,6 @@ if st.session_state.clicked_village:
     st.success(f"📍 **Village:** {st.session_state.clicked_village}")
 elif st.session_state.clicked_coords:
     lat, lon = st.session_state.clicked_coords
-    st.warning(f"No village polygon found at ({lat:.5f}, {lon:.5f})")
+    st.warning(f"No village found at ({lat:.5f}, {lon:.5f}) — try clicking inside a boundary.")
 else:
     st.info("Click on the map to identify a village.")
