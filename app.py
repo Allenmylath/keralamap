@@ -46,9 +46,8 @@ def find_village(gdf: gpd.GeoDataFrame, lat: float, lon: float, name_field: str)
             return row[name_field] if name_field else "Unknown"
     return None
 
-# ── Base map (cached — rebuilds only when highlighted village changes) ─────────
+# ── Base map ──────────────────────────────────────────────────────────────────
 
-@st.cache_data
 def build_base_map(geojson_str: str, name_field: str, clicked_village: str):
     import json
     m = folium.Map(location=MAP_CENTER, zoom_start=MAP_ZOOM, tiles="CartoDB positron")
