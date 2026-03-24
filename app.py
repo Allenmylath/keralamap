@@ -6,58 +6,67 @@ from shapely.geometry import Point
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEOJSON_PATH = "village.geojson"   # 🔧 Replace with your actual path
-VILLAGE_NAME_FIELD = None                # 🔧 Set to field name e.g. "NAME_3", or leave None to auto-detect
+GEOJSON_PATH = "village.geojson"         # same folder as this script
+VILLAGE_NAME_FIELD = None                # None = auto-detect, or set e.g. "NAME_3"
 
-MAP_CENTER = [10.8505, 76.2711]          # Kerala center — adjust to your region
+MAP_CENTER = [10.8505, 76.2711]          # adjust to your region
 MAP_ZOOM = 8
 
 HIGHLIGHT_COLOR = "#FF5733"
 DEFAULT_FILL_COLOR = "#3186cc"
 
-# ── Load GeoJSON ──────────────────────────────────────────────────────────────
+# ── Load GeoJSON (cached) ─────────────────────────────────────────────────────
 
 @st.cache_data
 def load_geodata(path: str):
     gdf = gpd.read_file(path)
     if gdf.crs and gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
+    gdf = gdf[gdf.geometry.notna()].reset_index(drop=True)
     return gdf
 
 def detect_name_field(gdf: gpd.GeoDataFrame) -> str:
-    """Pick the first string column that likely holds a place name."""
     if VILLAGE_NAME_FIELD and VILLAGE_NAME_FIELD in gdf.columns:
         return VILLAGE_NAME_FIELD
-    candidates = [c for c in gdf.columns if c.lower() not in ("geometry",)
-                  and gdf[c].dtype == object]
+    candidates = [
+        c for c in gdf.columns
+        if c.lower() != "geometry" and gdf[c].dtype == object
+    ]
     return candidates[0] if candidates else None
 
-# ── Point-in-polygon lookup ───────────────────────────────────────────────────
+# ── Fast point-in-polygon using spatial index ─────────────────────────────────
 
 def find_village(gdf: gpd.GeoDataFrame, lat: float, lon: float, name_field: str):
-    pt = Point(lon, lat)   # Shapely uses (x=lon, y=lat)
-    for _, row in gdf.iterrows():
-        if row.geometry and row.geometry.contains(pt):
-            return row[name_field] if name_field else "Unknown", row.geometry
-    return None, None
+    pt = Point(lon, lat)
+    # R-tree narrows to bounding-box candidates first, then exact check
+    possible_idx = list(gdf.sindex.intersection(pt.bounds))
+    for i in possible_idx:
+        row = gdf.iloc[i]
+        if row.geometry.contains(pt):
+            return row[name_field] if name_field else "Unknown"
+    return None
 
-# ── Build base map ────────────────────────────────────────────────────────────
+# ── Base map (cached — rebuilds only when highlighted village changes) ─────────
 
-def build_map(gdf: gpd.GeoDataFrame, name_field: str, clicked_village: str = None):
+@st.cache_data
+def build_base_map(geojson_str: str, name_field: str, clicked_village: str):
+    import json
     m = folium.Map(location=MAP_CENTER, zoom_start=MAP_ZOOM, tiles="CartoDB positron")
 
     def style_fn(feature):
-        village = feature["properties"].get(name_field, "")
-        is_selected = village == clicked_village and clicked_village is not None
+        is_selected = (
+            clicked_village is not None
+            and feature["properties"].get(name_field) == clicked_village
+        )
         return {
             "fillColor": HIGHLIGHT_COLOR if is_selected else DEFAULT_FILL_COLOR,
             "color": "white",
             "weight": 0.5,
-            "fillOpacity": 0.6 if is_selected else 0.3,
+            "fillOpacity": 0.65 if is_selected else 0.3,
         }
 
     folium.GeoJson(
-        data=gdf.__geo_interface__,
+        data=json.loads(geojson_str),
         name="Villages",
         style_function=style_fn,
         highlight_function=lambda _: {
@@ -73,6 +82,9 @@ def build_map(gdf: gpd.GeoDataFrame, name_field: str, clicked_village: str = Non
         ),
     ).add_to(m)
 
+    # ✅ Key fix: ensures last_clicked fires even when GeoJson layer absorbs the click
+    folium.LatLngPopup().add_to(m)
+
     return m
 
 # ── Main app ──────────────────────────────────────────────────────────────────
@@ -85,34 +97,38 @@ st.caption("Click anywhere on the map to identify the village.")
 try:
     gdf = load_geodata(GEOJSON_PATH)
 except Exception as e:
-    st.error(f"Failed to load GeoJSON from `{GEOJSON_PATH}`: {e}")
+    st.error(f"Could not load `{GEOJSON_PATH}`: {e}")
     st.stop()
 
 name_field = detect_name_field(gdf)
 if not name_field:
-    st.warning("No suitable name field detected in GeoJSON properties.")
+    st.warning("No name field found in GeoJSON properties.")
 
-# Session state for clicked village
+# Session state
 if "clicked_village" not in st.session_state:
     st.session_state.clicked_village = None
 if "clicked_coords" not in st.session_state:
     st.session_state.clicked_coords = None
 
-# Build and render map
-m = build_map(gdf, name_field, st.session_state.clicked_village)
+# Serialize once — passed to cached map builder
+geojson_str = gdf.to_json()
 
-# Add marker for last click
+# Build base map (cached per unique clicked_village value)
+m = build_base_map(geojson_str, name_field, st.session_state.clicked_village)
+
+# Add result marker (cheap, outside cache)
 if st.session_state.clicked_coords:
     lat, lon = st.session_state.clicked_coords
-    village = st.session_state.clicked_village or "No village found"
+    label = st.session_state.clicked_village or "No village found"
     folium.Marker(
         location=[lat, lon],
-        popup=folium.Popup(f"<b>{village}</b>", max_width=200),
-        tooltip="Click result",
+        popup=folium.Popup(f"<b>{label}</b>", max_width=220),
+        tooltip=label,
         icon=folium.Icon(color="red", icon="info-sign"),
     ).add_to(m)
 
-map_data = st_folium(m, width="100%", height=600, returned_objects=["last_clicked"])
+# Render
+map_data = st_folium(m, width="100%", height=620, returned_objects=["last_clicked"])
 
 # Handle click
 if map_data and map_data.get("last_clicked"):
@@ -121,11 +137,10 @@ if map_data and map_data.get("last_clicked"):
 
     if (lat, lon) != st.session_state.clicked_coords:
         st.session_state.clicked_coords = (lat, lon)
-        village_name, _ = find_village(gdf, lat, lon, name_field)
-        st.session_state.clicked_village = village_name
+        st.session_state.clicked_village = find_village(gdf, lat, lon, name_field)
         st.rerun()
 
-# Info panel below map
+# Info panel
 st.divider()
 if st.session_state.clicked_village:
     st.success(f"📍 **Village:** {st.session_state.clicked_village}")
