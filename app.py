@@ -6,7 +6,7 @@ from shapely.geometry import Point
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEOJSON_PATH = "data/villages.geojson"   # 🔧 Replace with your actual path
+GEOJSON_PATH = "village.geojson"   # 🔧 Replace with your actual path
 VILLAGE_NAME_FIELD = None                # 🔧 Set to field name e.g. "NAME_3", or leave None to auto-detect
 
 MAP_CENTER = [10.8505, 76.2711]          # Kerala center — adjust to your region
