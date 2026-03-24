@@ -7,7 +7,7 @@ from shapely.geometry import Point
 # ── Config ────────────────────────────────────────────────────────────────────
 
 GEOJSON_PATH = "village.geojson"         # same folder as this script
-VILLAGE_NAME_FIELD = None                # None = auto-detect, or set e.g. "NAME_3"
+VILLAGE_NAME_FIELD = "NAME"
 
 MAP_CENTER = [10.8505, 76.2711]          # adjust to your region
 MAP_ZOOM = 8
@@ -82,7 +82,15 @@ def build_base_map(geojson_str: str, name_field: str, clicked_village: str):
     ).add_to(m)
 
     # ✅ Key fix: ensures last_clicked fires even when GeoJson layer absorbs the click
+    # CSS hides the visible coordinate popup while keeping click detection working
     folium.LatLngPopup().add_to(m)
+    hide_popup_css = """
+    <style>
+    .leaflet-popup-content-wrapper { display: none !important; }
+    .leaflet-popup-tip-container    { display: none !important; }
+    </style>
+    """
+    m.get_root().html.add_child(folium.Element(hide_popup_css))
 
     return m
 
