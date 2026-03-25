@@ -61,6 +61,7 @@
       background: var(--accent);
       box-shadow: 0 0 8px var(--accent);
       animation: pulse 2s infinite;
+      flex-shrink: 0;
     }
 
     @keyframes pulse {
@@ -74,6 +75,7 @@
       font-weight: 400;
       letter-spacing: 0.01em;
       color: var(--text);
+      white-space: nowrap;
     }
 
     #header .subtitle {
@@ -82,7 +84,28 @@
       color: var(--muted);
       letter-spacing: 0.05em;
       text-transform: uppercase;
+      white-space: nowrap;
     }
+
+    /* Mobile district select inside header — hidden on desktop */
+    #header-district-wrap {
+      display: none;
+    }
+
+    #header-district-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.78rem;
+      outline: none;
+      cursor: pointer;
+      max-width: 140px;
+    }
+
+    #header-district-select:focus { border-color: var(--accent); }
 
     /* ── Sidebar ── */
     #sidebar {
@@ -270,6 +293,133 @@
       box-shadow: 0 4px 16px rgba(0,0,0,0.4) !important;
     }
     .leaflet-tooltip-top::before { border-top-color: var(--border) !important; }
+
+    /* ─────────────────────────────────────────────
+       BOTTOM SHEET  (mobile only — rendered always,
+       shown/hidden via JS)
+    ───────────────────────────────────────────── */
+    #bottom-sheet {
+      display: none; /* turned on inside media query via class toggle trick */
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 1000;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0;
+      /* start fully off-screen */
+      transform: translateY(100%);
+      transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+      max-height: 70vh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    #bottom-sheet.open {
+      transform: translateY(0);
+    }
+
+    /* Drag handle */
+    .sheet-handle-bar {
+      display: flex;
+      justify-content: center;
+      padding: 12px 0 4px;
+      cursor: grab;
+    }
+
+    .sheet-handle-bar::after {
+      content: '';
+      width: 40px; height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    /* Sheet content */
+    .sheet-body {
+      padding: 4px 20px 32px;
+    }
+
+    .sheet-village-name {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.5rem;
+      color: var(--accent);
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+
+    .sheet-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 14px 0;
+    }
+
+    .sheet-meta-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      margin-bottom: 8px;
+    }
+
+    .sheet-meta-key   { color: var(--muted); }
+    .sheet-meta-value { color: var(--text); font-weight: 500; text-align: right; }
+
+    .sheet-coords {
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* ── MOBILE MEDIA QUERY ── */
+    @media (max-width: 768px) {
+
+      /* Switch to single-column full-height layout */
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 52px 1fr;
+      }
+
+      /* Compact header */
+      #header {
+        padding: 0 14px;
+        gap: 10px;
+      }
+
+      #header h1 {
+        font-size: 1rem;
+      }
+
+      /* Show district select in header, hide subtitle */
+      #header .subtitle {
+        display: none;
+      }
+
+      #header-district-wrap {
+        display: flex;
+        margin-left: auto;
+        align-items: center;
+      }
+
+      /* Hide desktop sidebar entirely */
+      #sidebar {
+        display: none;
+      }
+
+      /* Map fills everything below header */
+      #map {
+        grid-column: 1;
+        grid-row: 2;
+      }
+
+      /* Show bottom sheet */
+      #bottom-sheet {
+        display: block;
+      }
+
+      /* Push zoom control up so sheet doesn't cover it */
+      .leaflet-control-zoom {
+        margin-bottom: 16px !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -288,9 +438,16 @@
     <div class="dot"></div>
     <h1>Kerala Village Map</h1>
     <span class="subtitle">Census 2001 · 1532 Villages</span>
+
+    <!-- Mobile: district filter lives here -->
+    <div id="header-district-wrap">
+      <select id="header-district-select">
+        <option value="all">All Districts</option>
+      </select>
+    </div>
   </header>
 
-  <!-- Sidebar -->
+  <!-- Sidebar (desktop) -->
   <aside id="sidebar">
 
     <!-- Selected village -->
@@ -358,6 +515,28 @@
 
 </div>
 
+<!-- ── Bottom Sheet (mobile) ── -->
+<div id="bottom-sheet">
+  <div class="sheet-handle-bar" id="sheet-handle"></div>
+  <div class="sheet-body">
+    <div class="sheet-village-name" id="sheet-village-name">—</div>
+    <div class="sheet-coords" id="sheet-coords"></div>
+    <div class="sheet-divider"></div>
+    <div class="sheet-meta-row">
+      <span class="sheet-meta-key">District</span>
+      <span class="sheet-meta-value" id="sheet-district">—</span>
+    </div>
+    <div class="sheet-meta-row">
+      <span class="sheet-meta-key">Sub-district</span>
+      <span class="sheet-meta-value" id="sheet-subdistrict">—</span>
+    </div>
+    <div class="sheet-meta-row">
+      <span class="sheet-meta-key">Census ID</span>
+      <span class="sheet-meta-value" id="sheet-cenid">—</span>
+    </div>
+  </div>
+</div>
+
 <script>
   // ── Map init ────────────────────────────────────────────────────────────────
   const map = L.map('map', {
@@ -400,6 +579,54 @@
     fillOpacity: 0.7,
   };
 
+  // ── Bottom sheet helpers ────────────────────────────────────────────────────
+  const sheet = document.getElementById('bottom-sheet');
+
+  function openSheet() {
+    sheet.classList.add('open');
+  }
+
+  function closeSheet() {
+    sheet.classList.remove('open');
+  }
+
+  // Swipe-to-dismiss on the handle
+  (function initSwipeDismiss() {
+    const handle = document.getElementById('sheet-handle');
+    let startY = 0;
+    let startTranslate = 0;
+
+    handle.addEventListener('touchstart', e => {
+      startY = e.touches[0].clientY;
+      startTranslate = 0;
+      sheet.style.transition = 'none';
+    }, { passive: true });
+
+    handle.addEventListener('touchmove', e => {
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 0) { // only allow dragging down
+        sheet.style.transform = `translateY(${dy}px)`;
+      }
+    }, { passive: true });
+
+    handle.addEventListener('touchend', e => {
+      sheet.style.transition = '';
+      const dy = e.changedTouches[0].clientY - startY;
+      if (dy > 80) {
+        // Dragged far enough — close
+        closeSheet();
+        sheet.style.transform = '';
+        if (selectedLayer) {
+          geojsonLayer.resetStyle(selectedLayer);
+          selectedLayer = null;
+        }
+      } else {
+        // Snap back
+        sheet.style.transform = '';
+      }
+    }, { passive: true });
+  })();
+
   // ── GeoJSON layer builder ───────────────────────────────────────────────────
   function buildLayer(data) {
     return L.geoJSON(data, {
@@ -408,7 +635,7 @@
       onEachFeature(feature, layer) {
         const p = feature.properties;
 
-        // Tooltip on hover
+        // Tooltip on hover (desktop)
         layer.bindTooltip(p.NAME, {
           sticky: true,
           direction: 'top',
@@ -440,71 +667,104 @@
             layer.setStyle(STYLE_SELECTED);
             layer.bringToFront();
 
-            // Update sidebar
+            // Update sidebar (desktop)
             showVillage(p, e.latlng);
+
+            // Update + open bottom sheet (mobile)
+            showSheet(p, e.latlng);
           },
         });
       },
     });
   }
 
-  // ── Sidebar update ──────────────────────────────────────────────────────────
+  // ── Desktop sidebar update ──────────────────────────────────────────────────
   function showVillage(props, latlng) {
     const card = document.getElementById('result-card');
     card.classList.remove('empty');
 
-    document.getElementById('village-name').textContent   = props.NAME       || '—';
-    document.getElementById('meta-district').textContent  = props.DISTRICT   || '—';
-    document.getElementById('meta-subdistrict').textContent = props.SUB_DIST || '—';
-    document.getElementById('meta-cenid').textContent     = props.CEN_2001   || '—';
-    document.getElementById('village-meta').style.display = 'flex';
+    document.getElementById('village-name').textContent     = props.NAME       || '—';
+    document.getElementById('meta-district').textContent    = props.DISTRICT   || '—';
+    document.getElementById('meta-subdistrict').textContent = props.SUB_DIST   || '—';
+    document.getElementById('meta-cenid').textContent       = props.CEN_2001   || '—';
+    document.getElementById('village-meta').style.display   = 'flex';
 
     document.getElementById('coords-display').innerHTML =
       `Lat &nbsp;<b>${latlng.lat.toFixed(5)}</b><br>Lng &nbsp;<b>${latlng.lng.toFixed(5)}</b>`;
   }
 
-  // Click on empty map resets
+  // ── Mobile bottom sheet update ──────────────────────────────────────────────
+  function showSheet(props, latlng) {
+    document.getElementById('sheet-village-name').textContent = props.NAME     || '—';
+    document.getElementById('sheet-district').textContent     = props.DISTRICT || '—';
+    document.getElementById('sheet-subdistrict').textContent  = props.SUB_DIST || '—';
+    document.getElementById('sheet-cenid').textContent        = props.CEN_2001 || '—';
+    document.getElementById('sheet-coords').textContent =
+      `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+    openSheet();
+  }
+
+  // Click on empty map resets everything
   map.on('click', () => {
     if (selectedLayer) {
       geojsonLayer.resetStyle(selectedLayer);
       selectedLayer = null;
     }
+    // Desktop
     document.getElementById('result-card').classList.add('empty');
     document.getElementById('village-name').textContent = 'Click a village';
     document.getElementById('village-meta').style.display = 'none';
     document.getElementById('coords-display').textContent = '—';
+    // Mobile
+    closeSheet();
   });
 
-  // ── District filter ─────────────────────────────────────────────────────────
+  // ── District filter logic (shared) ─────────────────────────────────────────
+  function applyDistrictFilter(val) {
+    if (val === 'all') {
+      if (geojsonLayer) map.removeLayer(geojsonLayer);
+      geojsonLayer = buildLayer(allData).addTo(map);
+      map.flyTo([10.8505, 76.2711], 8, { duration: 1 });
+    } else {
+      const filtered = {
+        type: 'FeatureCollection',
+        features: allData.features.filter(f => f.properties.DISTRICT === val),
+      };
+      if (geojsonLayer) map.removeLayer(geojsonLayer);
+      geojsonLayer = buildLayer(filtered).addTo(map);
+      map.flyToBounds(geojsonLayer.getBounds(), { padding: [40, 40], duration: 1 });
+    }
+    selectedLayer = null;
+    closeSheet();
+  }
+
+  // ── Populate district dropdowns ─────────────────────────────────────────────
   function populateDistricts(data) {
     const districts = [...new Set(
       data.features.map(f => f.properties.DISTRICT).filter(Boolean)
     )].sort();
 
-    const sel = document.getElementById('district-select');
+    const desktopSel = document.getElementById('district-select');
+    const mobileSel  = document.getElementById('header-district-select');
+
     districts.forEach(d => {
-      const opt = document.createElement('option');
-      opt.value = d;
-      opt.textContent = d;
-      sel.appendChild(opt);
+      [desktopSel, mobileSel].forEach(sel => {
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = d;
+        sel.appendChild(opt);
+      });
     });
 
-    sel.addEventListener('change', () => {
-      const val = sel.value;
-      if (val === 'all') {
-        if (geojsonLayer) map.removeLayer(geojsonLayer);
-        geojsonLayer = buildLayer(allData).addTo(map);
-        map.flyTo([10.8505, 76.2711], 8, { duration: 1 });
-      } else {
-        const filtered = {
-          type: 'FeatureCollection',
-          features: allData.features.filter(f => f.properties.DISTRICT === val),
-        };
-        if (geojsonLayer) map.removeLayer(geojsonLayer);
-        geojsonLayer = buildLayer(filtered).addTo(map);
-        map.flyToBounds(geojsonLayer.getBounds(), { padding: [40, 40], duration: 1 });
-      }
-      selectedLayer = null;
+    // Both selects drive the same logic; keep them in sync
+    desktopSel.addEventListener('change', () => {
+      mobileSel.value = desktopSel.value;
+      applyDistrictFilter(desktopSel.value);
+    });
+
+    mobileSel.addEventListener('change', () => {
+      desktopSel.value = mobileSel.value;
+      applyDistrictFilter(mobileSel.value);
     });
   }
 
